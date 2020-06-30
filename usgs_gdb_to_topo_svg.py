@@ -1,21 +1,29 @@
 import json
 import itertools
 import os
+import collections
 
 from osgeo import gdal
 import drawSvg as draw
 
-def extract_topo_data(gis_data, layer_name):
+def extract_layer_features(gis_data, layer_name):
     # We're only interested in the elevation contours.  We'll read each
     # feature in this layer and convert it to a simple json representation
-    elev_layer = gis_data.GetLayerByName(layer_name)
-    n_features = elev_layer.GetFeatureCount()
-    features = [elev_layer.GetFeature(idx) for idx in range(1,n_features+1)]
+    layer = gis_data.GetLayerByName(layer_name)
+    n_features = layer.GetFeatureCount()
+    features = [layer.GetFeature(idx) for idx in range(1,n_features+1)]
     features_json = [json.loads(f.ExportToJson()) for f in features]
+    return features_json
 
-    # extract just the 2D geometry of the contour lines
-    lines = [f['geometry']['coordinates'][0] for f in features_json]
-    return lines
+
+def get_topo_lines(topo_features_json_list):
+    topo_lines = collections.defaultdict(list)
+    for topo_features_json in topo_features_json_list:
+        # collect lines by elevation
+        for f in topo_features_json:
+            elevation = f["properties"]["ContourElevation"]
+            topo_lines[elevation].append(f['geometry']['coordinates'][0])
+    return dict(topo_lines)
 
 
 def extents(gis_data_list, layer_name):
@@ -29,7 +37,14 @@ def extents(gis_data_list, layer_name):
     ymin = min(ymins)
     ymax = max(ymaxes)
     return xmin, xmax, ymin, ymax
-        
+
+def interpolate_color(cmin, cmax, cval):
+    cval = [
+        channel_min*(1.0-cval) + channel_max*cval
+        for channel_min, channel_max in zip(cmin, cmax)
+    ]
+    return f"rgb({int(cval[0])}, {int(cval[1])}, {int(cval[2])})"
+
 
 # just hard-code this for now
 BASE_DIR = "/home/jsam/winHome/Documents/personal/topo_maps"
@@ -39,7 +54,8 @@ GIS_FILES = [
     os.path.join(BASE_DIR, "VECTOR_Shilshole_Bay_WA_7_5_Min_GDB.zip"),
     os.path.join(BASE_DIR, "VECTOR_Duwamish_Head_WA_7_5_Min_GDB.zip")
 ]
-LAYER_NAME = "Elev_Contour"
+TOPO_LAYER_NAME = "Elev_Contour"
+WATER_LAYER_NAME = "NHDWaterbody"
 
 # gdal python wrappers don't raise exceptions by default
 gdal.UseExceptions()
@@ -53,36 +69,97 @@ if __name__ == "__main__":
     layers = [data[0].GetLayerByIndex(idx) for idx in range(n_layers)]
     print([l.GetName() for l in layers])
 
-    lines = list(itertools.chain(*[
-        extract_topo_data(_data, LAYER_NAME) for _data in data
-    ]))
+    topo_json = [
+        extract_layer_features(_data, TOPO_LAYER_NAME)
+        for _data in data
+    ]
+
+    lines_by_elevation = get_topo_lines(topo_json)
+        
     # this layer comes with extent information that we can use when
     # defining the svg
-    xmin, xmax, ymin, ymax = extents(data, LAYER_NAME)
+    xmin, xmax, ymin, ymax = extents(data, TOPO_LAYER_NAME)
+
+    # Get water features
+    water_json = list(itertools.chain(*[
+        extract_layer_features(_data, WATER_LAYER_NAME) for _data in data
+    ]))
+
+    # get water geometry
+    water_geometry = list(itertools.chain(*[
+        w["geometry"]["coordinates"][0] for w in water_json
+    ]))
 
     # Now create the SVG image
 
+    # sort the lines by elevation so we draw them in the right order
+    sorted_lines = list(
+        sorted(lines_by_elevation.items(), key=lambda x: x[0])
+    )
+    sorted_lines = [
+        [(elev, [(pt[0], pt[1]) for pt in line]) for line in lines]
+        for elev, lines in sorted_lines
+    ]
+    sorted_lines = list(itertools.chain(*sorted_lines))
+
+    elevations = list(sorted(set(lines_by_elevation.keys())))
+    min_elev, max_elev = elevations[0], elevations[-1]
     # remember we're working with coordinates in degrees, so the pixel
     # scale is very large and stroke width needs to be very small
     PIXEL_SCALE=10000
     STROKE_WIDTH=1.0/PIXEL_SCALE
-    STROKE_COLOR='#00aa00'
+    STROKE_COLOR_MIN=(0, 64, 0)
+    STROKE_COLOR_MAX=(0, 255, 0)
     d = draw.Drawing(
         xmax-xmin,
         ymax-ymin,
         origin=(xmin, ymin),
         displayInline=False
     )
-    for line in lines:
-        linepoints = list(itertools.chain(*[(pt[0], pt[1]) for pt in line]))
+
+    for water in water_geometry:
+        linepoints = [(pt[0], pt[1]) for pt in water]
+        linepoints = list(itertools.chain(*linepoints))
+        d.append(
+            draw.Lines(
+                *linepoints,
+                close=True,
+                stroke_width=STROKE_WIDTH,
+                fill='#0044aa',
+                stroke="#000000",
+            )
+        )
+        
+    for elev, line in sorted_lines:
+        linepoints = list(itertools.chain(*line))
+        norm_cval = elev/(max_elev-min_elev)
         d.append(
             draw.Lines(
                 *linepoints,
                 close=False,
                 stroke_width=STROKE_WIDTH,
                 fill='none',
-                # fill='#eeee00',
-                stroke=STROKE_COLOR))
+                # fill='#eeeeee',
+                stroke=interpolate_color(
+                    STROKE_COLOR_MIN, STROKE_COLOR_MAX, norm_cval
+                )
+            )
+        )
+
+    # add test route
+    with open("route.json") as fp:
+        route = json.load(fp)
+    linepoints = list(itertools.chain(*[(pt[1], pt[0]) for pt in route]))
+    d.append(draw.Lines(
+        *linepoints,
+        close=False,
+        stroke_width=2*STROKE_WIDTH,
+        fill='none',
+        # fill='#eeeeee',
+        stroke="#AA4444",
+    ))
+        
+
     d.setPixelScale(PIXEL_SCALE)  # Set number of pixels per geometry unit
     # d.setRenderSize(400,200)  # Alternative to setPixelScale
     d.saveSvg('contours.svg')
