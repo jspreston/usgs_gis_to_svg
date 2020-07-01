@@ -1,5 +1,6 @@
 import os
 import datetime as dt
+import json
 
 import requests
 # python implementation of Google’s Encoded Polyline Algorithm Format:
@@ -22,8 +23,9 @@ AUTH_URL = f"http://www.strava.com/oauth/authorize?client_id={STRAVA_CLIENT_ID}&
 
 auth_code = input(
     "Go to the following URL; it will redirect you to a Not Found page, but "
-    "copy the 'code=' portion of the URL here.\n\nURL:" + AUTH_URL + "\code="
+    "copy the 'code=' portion of the URL here.\n\nURL:" + AUTH_URL + "\ncode="
 )
+print(f"auth code: {auth_code}")
 
 payload = {
     "client_id": STRAVA_CLIENT_ID,
@@ -38,25 +40,35 @@ if not r.ok:
 access_token = r.json()["access_token"]
 
 before = str(int(dt.datetime.now().timestamp()))
-after = str(int(dt.datetime(year=2020, month=5, day=1).timestamp()))
+after = str(int(dt.datetime(year=2019, month=8, day=1).timestamp()))
 params = {
     "before": before,
     "after": after,
-    "page": 1,
+    "page": -1,
     "per_page": 30,
 }
 headers = {"Authorization": f"Bearer {access_token}"}
-r = requests.get(
-    "https://www.strava.com/api/v3/athlete/activities",
-    params=params,
-    headers=headers,
-)
-if not r.ok:
-    print(r.text)
-    r.raise_for_status()
-    
-activity_list = r.json()
+page_idx = 1
+activity_list = []
+while True:
+    params["page"] = page_idx
+    print(f"getting page {page_idx} of activities")
+    r = requests.get(
+        "https://www.strava.com/api/v3/athlete/activities",
+        params=params,
+        headers=headers,
+    )
+    if not r.ok:
+        print(r.text)
+        r.raise_for_status()
+    cur_activities = r.json()
+    print(f"retrieved {len(cur_activities)} activities")
+    if not cur_activities:
+        break
+    activity_list.extend(r.json())
+    page_idx += 1
 
+print(f"found total of {len(activity_list)} activities")
 full_activities = []
 for activity in activity_list:
     print(f"retrieving {activity['name']} ({activity['start_date']})...")

@@ -2,6 +2,7 @@ import json
 import itertools
 import os
 import collections
+import math
 
 from osgeo import gdal
 import drawSvg as draw
@@ -31,12 +32,12 @@ def extents(gis_data_list, layer_name):
         gis_data.GetLayerByName(layer_name).GetExtent()
         for gis_data in gis_data_list
     ]
-    xmins, xmaxes, ymins, ymaxes = [list(l) for l in zip(*extents)]
-    xmin = min(xmins)
-    xmax = max(xmaxes)
-    ymin = min(ymins)
-    ymax = max(ymaxes)
-    return xmin, xmax, ymin, ymax
+    lon_mins, lon_maxes, lat_mins, lat_maxes = [list(l) for l in zip(*extents)]
+    lon_min = min(lon_mins)
+    lon_max = max(lon_maxes)
+    lat_min = min(lat_mins)
+    lat_max = max(lat_maxes)
+    return lat_min, lat_max, lon_min, lon_max
 
 def interpolate_color(cmin, cmax, cval):
     cval = [
@@ -78,8 +79,18 @@ if __name__ == "__main__":
         
     # this layer comes with extent information that we can use when
     # defining the svg
-    xmin, xmax, ymin, ymax = extents(data, TOPO_LAYER_NAME)
+    lat_min, lat_max, lon_min, lon_max = extents(data, TOPO_LAYER_NAME)
+    lat_center = (lat_max + lat_min) / 2.0
+    lon_center = (lon_max + lon_min) / 2.0
+    print(f"center: {lat_center}, {lon_center}")
+    aspect_ratio = 1 / math.cos(math.radians(lat_center))
+    # aspect_ratio = 1.0
 
+    def xfrm_pts(points):
+        return list(itertools.chain(
+            *[(lat, aspect_ratio*lon) for lat, lon in points]
+        ))
+    
     # Get water features
     water_json = list(itertools.chain(*[
         extract_layer_features(_data, WATER_LAYER_NAME) for _data in data
@@ -111,31 +122,28 @@ if __name__ == "__main__":
     STROKE_COLOR_MIN=(0, 64, 0)
     STROKE_COLOR_MAX=(0, 255, 0)
     d = draw.Drawing(
-        xmax-xmin,
-        ymax-ymin,
-        origin=(xmin, ymin),
+        *xfrm_pts([(lon_max-lon_min, lat_max-lat_min)]),
+        origin=[*xfrm_pts([(lon_min, lat_min)])],
         displayInline=False
     )
 
     for water in water_geometry:
         linepoints = [(pt[0], pt[1]) for pt in water]
-        linepoints = list(itertools.chain(*linepoints))
         d.append(
             draw.Lines(
-                *linepoints,
+                *xfrm_pts(linepoints),
                 close=True,
                 stroke_width=STROKE_WIDTH,
-                fill='#0044aa',
-                stroke="#000000",
+                fill='#4488ff',
+                stroke='#4488ff',
             )
         )
         
     for elev, line in sorted_lines:
-        linepoints = list(itertools.chain(*line))
         norm_cval = elev/(max_elev-min_elev)
         d.append(
             draw.Lines(
-                *linepoints,
+                *xfrm_pts(line),
                 close=False,
                 stroke_width=STROKE_WIDTH,
                 fill='none',
@@ -147,17 +155,19 @@ if __name__ == "__main__":
         )
 
     # add test route
-    with open("route.json") as fp:
-        route = json.load(fp)
-    linepoints = list(itertools.chain(*[(pt[1], pt[0]) for pt in route]))
-    d.append(draw.Lines(
-        *linepoints,
-        close=False,
-        stroke_width=2*STROKE_WIDTH,
-        fill='none',
-        # fill='#eeeeee',
-        stroke="#AA4444",
-    ))
+    with open("routes.json") as fp:
+        routes = json.load(fp)
+    for route in routes:
+        linepoints = [(pt[1], pt[0]) for pt in route]
+        d.append(draw.Lines(
+            *xfrm_pts(linepoints),
+            close=False,
+            stroke_width=3*STROKE_WIDTH,
+            opacity=0.5,
+            fill='none',
+            # fill='#eeeeee',
+            stroke="#FF4444",
+        ))
         
 
     d.setPixelScale(PIXEL_SCALE)  # Set number of pixels per geometry unit
