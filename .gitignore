@@ -1,0 +1,5 @@
+*~
+*.json
+*.svg
+
+init_vars.sh
