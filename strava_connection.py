@@ -1,6 +1,7 @@
 import os
 import datetime as dt
 import json
+import time
 
 import requests
 # python implementation of Google’s Encoded Polyline Algorithm Format:
@@ -19,7 +20,11 @@ print(f"STRAVA_CLIENT_SECRET={STRAVA_CLIENT_SECRET}")
 
 # need read-all acess for activities to download tracks
 scope = ["activity:read_all"]
-AUTH_URL = f"http://www.strava.com/oauth/authorize?client_id={STRAVA_CLIENT_ID}&response_type=code&redirect_uri=http://localhost/exchange_token&approval_prompt=force&scope={';'.join(scope)}"
+AUTH_URL = (
+    f"http://www.strava.com/oauth/authorize?client_id={STRAVA_CLIENT_ID}"
+            "&response_type=code&redirect_uri=http://localhost/exchange_token&"
+            f"approval_prompt=force&scope={';'.join(scope)}"
+)
 
 auth_code = input(
     "Go to the following URL; it will redirect you to a Not Found page, but "
@@ -73,13 +78,25 @@ full_activities = []
 for activity in activity_list:
     print(f"retrieving {activity['name']} ({activity['start_date']})...")
     activity_id = activity["id"]
-    r = requests.get(
-        f"https://www.strava.com/api/v3/activities/{activity_id}",
-        headers=headers,
-    )
-    if not r.ok:
-        print(r.text)
-        r.raise_for_status()
+    while True:  # keep trying on rate limit error
+        r = requests.get(
+            f"https://www.strava.com/api/v3/activities/{activity_id}",
+            headers=headers,
+        )
+        if r.ok:
+            break  # got a result, don't retry
+        else:
+            print(r.text)
+            if r.status_code == 429:  # rate limit
+                now = dt.datetime.now()
+                minutes_till_reset = 15 - (now.minute % 15)
+                print(
+                    "got a rate limit timeout, sleeping for "
+                    f"{minutes_till_reset} minutes"
+                )
+                time.sleep(minutes_till_reset*60)
+            else:
+                r.raise_for_status()
 
     full_activities.append(r.json())
 
