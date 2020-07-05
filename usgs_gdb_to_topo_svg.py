@@ -7,6 +7,8 @@ import math
 from osgeo import gdal
 import drawSvg as draw
 
+from contour_utils import ContourCloser
+
 def extract_layer_features(gis_data, layer_name):
     # We're only interested in the elevation contours.  We'll read each
     # feature in this layer and convert it to a simple json representation
@@ -17,13 +19,12 @@ def extract_layer_features(gis_data, layer_name):
     return features_json
 
 
-def get_topo_lines(topo_features_json_list):
+def get_topo_lines(topo_features_json):
     topo_lines = collections.defaultdict(list)
-    for topo_features_json in topo_features_json_list:
-        # collect lines by elevation
-        for f in topo_features_json:
-            elevation = f["properties"]["ContourElevation"]
-            topo_lines[elevation].append(f['geometry']['coordinates'][0])
+    # collect lines by elevation
+    for f in topo_features_json:
+        elevation = f["properties"]["ContourElevation"]
+        topo_lines[elevation].append(f['geometry']['coordinates'][0])
     return dict(topo_lines)
 
 
@@ -70,12 +71,38 @@ if __name__ == "__main__":
     layers = [data[0].GetLayerByIndex(idx) for idx in range(n_layers)]
     print([l.GetName() for l in layers])
 
-    topo_json = [
+    topo_jsons = [
         extract_layer_features(_data, TOPO_LAYER_NAME)
         for _data in data
     ]
 
-    lines_by_elevation = get_topo_lines(topo_json)
+    lines_by_elevation_list = [
+        get_topo_lines(topo_json) for topo_json in topo_jsons
+    ]
+
+    # create closed contours
+    bbox_list = [
+        _data.GetLayerByName(TOPO_LAYER_NAME).GetExtent()
+        for _data in data
+    ]
+
+    closed_lines_by_elevation_list = []
+    for bbox, lbe in zip(bbox_list, lines_by_elevation_list):
+        cc = ContourCloser(bbox)
+        closed_lbe = {
+            elevation: [cc.close_contour(line) for line in lines]
+            for elevation, lines in lbe.items()
+        }
+        closed_lines_by_elevation_list.append(closed_lbe)
+
+    def combine_dicts(dict_list):
+        out_dict = collections.defaultdict(list)
+        for d in dict_list:
+            for k, v in d:
+                out_dict[k].extend(v)
+        return out_dict
+
+    lines_by_elevation = combine_dicts(closed_lines_by_elevation)
         
     # this layer comes with extent information that we can use when
     # defining the svg
