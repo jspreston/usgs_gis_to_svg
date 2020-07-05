@@ -89,20 +89,35 @@ if __name__ == "__main__":
     closed_lines_by_elevation_list = []
     for bbox, lbe in zip(bbox_list, lines_by_elevation_list):
         cc = ContourCloser(bbox)
-        closed_lbe = {
-            elevation: [cc.close_contour(line) for line in lines]
-            for elevation, lines in lbe.items()
-        }
+        closed_lbe = {}
+        for elevation, lines in lbe.items():
+            closed_lines = []
+            for line in lines:
+                # TEST
+                # import matplotlib.pyplot as plt
+                # plt.figure('contour test')
+                # plt.plot(
+                #     [bbox[0], bbox[0], bbox[1], bbox[1]],
+                #     [bbox[2], bbox[3], bbox[3], bbox[2]],
+                #     'k'
+                # )
+                # x, y, z = [list(l) for l in zip(*line)]
+                # plt.plot(x, y, 'g')
+                # plt.show()
+                # END TEST
+                closed_line = cc.close_contour(line)
+                closed_lines.append(closed_line)
+            closed_lbe[elevation] = closed_lines
         closed_lines_by_elevation_list.append(closed_lbe)
 
     def combine_dicts(dict_list):
         out_dict = collections.defaultdict(list)
         for d in dict_list:
-            for k, v in d:
+            for k, v in d.items():
                 out_dict[k].extend(v)
         return out_dict
 
-    lines_by_elevation = combine_dicts(closed_lines_by_elevation)
+    lines_by_elevation = combine_dicts(closed_lines_by_elevation_list)
         
     # this layer comes with extent information that we can use when
     # defining the svg

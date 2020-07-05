@@ -4,6 +4,8 @@ This assumes that points are in (lat, lon) order!!
 import math
 from dataclasses import dataclass
 
+import numpy as np
+
 
 EDGE_ORDER = ["N", "W", "S", "E"]
 EDGE_IDX = {edge: idx for idx, edge in enumerate(EDGE_ORDER)}
@@ -91,7 +93,28 @@ class ContourCloser:
             return Pt(lat=self.lat_max, lon=self.lon_max)
         else:
             raise ValueError(f"unrecognized edge {edge}")
+
+    def fix_bad_point(self, point, endpoint):
         
+        n_dist = abs(point.lat - self.lat_max)
+        w_dist = abs(point.lon - self.lon_min)
+        s_dist = abs(point.lat - self.lat_min)
+        e_dist = abs(point.lon - self.lon_max)
+        pt_dist = math.sqrt((point.lat-endpoint.lat)**2 + (point.lon-endpoint.lon)**2)
+        distances = np.array([n_dist, w_dist, s_dist, e_dist, pt_dist])
+        idx = np.argmin(distances)
+        if idx == 0:  # N
+            return Pt(lat=self.lat_max, lon=point.lon), True
+        elif idx == 1:  # W
+            return Pt(lat=point.lat, lon=self.lon_min), True
+        elif idx == 2:  # S
+            return Pt(lat=self.lat_min, lon=point.lon), True
+        elif idx == 3:  # E
+            return Pt(lat=point.lat, lon=self.lon_max), True
+        elif idx == 4:
+            return endpoint, False
+        raise ValueError(f"huh? unknown idx {idx}")
+    
     def close_contour(self, line):
         print(f"line has {len(line)} points")
         points = convert_to_pts(line)
@@ -110,9 +133,29 @@ class ContourCloser:
             print("already closed!")
             return points
 
-        first_point_edge = self.get_point_edge(first_point)
-        last_point_edge = self.get_point_edge(last_point)
-
+        # we have to fix some contours that seem like they should end
+        # on a map boundary but don't quite touch the edge
+        try:
+            first_point_edge = self.get_point_edge(first_point)
+        except ValueError:
+            print("fixing bad first point")
+            first_point, is_boundary = self.fix_bad_point(first_point, last_point)
+            points = [first_point] + points
+            if not is_boundary:
+                return points  # fixing closed boundary
+            first_point_edge = self.get_point_edge(first_point)
+            
+        try:
+            last_point_edge = self.get_point_edge(last_point)
+        except ValueError:
+            print("fixing bad last point")
+            last_point, is_boundary = self.fix_bad_point(last_point, first_point)
+            points = points + [last_point]
+            if not is_boundary:
+                return points  # fixing closed boundary
+            last_point_edge = self.get_point_edge(last_point)
+            
+        
         if last_point_edge == first_point_edge:
             if winding_dir_order(first_point_edge, last_point, first_point):
                 print("closing immediately")
