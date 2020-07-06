@@ -7,7 +7,7 @@ import math
 from osgeo import gdal
 import drawSvg as draw
 
-from contour_utils import ContourCloser
+from contour_utils import ContourCloser, ContourCombiner
 
 def extract_layer_features(gis_data, layer_name):
     # We're only interested in the elevation contours.  We'll read each
@@ -86,26 +86,35 @@ if __name__ == "__main__":
         for _data in data
     ]
 
+    
+    
     closed_lines_by_elevation_list = []
     for bbox, lbe in zip(bbox_list, lines_by_elevation_list):
-        cc = ContourCloser(bbox)
+        
+        ccomb = ContourCombiner(bbox, eps=1e-6)
+        combined_lbe = ccomb.combine_contours(lbe)
+        
+        cclose = ContourCloser(bbox)
         closed_lbe = {}
-        for elevation, lines in lbe.items():
+        for elevation, lines in combined_lbe.items():
             closed_lines = []
             for line in lines:
-                # TEST
-                # import matplotlib.pyplot as plt
-                # plt.figure('contour test')
-                # plt.plot(
-                #     [bbox[0], bbox[0], bbox[1], bbox[1]],
-                #     [bbox[2], bbox[3], bbox[3], bbox[2]],
-                #     'k'
-                # )
-                # x, y, z = [list(l) for l in zip(*line)]
-                # plt.plot(x, y, 'g')
-                # plt.show()
-                # END TEST
-                closed_line = cc.close_contour(line)
+                closed_line = cclose.close_contour(line)
+                
+                if cclose.error:
+                    import matplotlib.pyplot as plt
+                    plt.figure('contour test')
+                    plt.plot(
+                        [bbox[0], bbox[0], bbox[1], bbox[1]],
+                        [bbox[2], bbox[3], bbox[3], bbox[2]],
+                        'k'
+                    )
+                    x, y, z = [list(l) for l in zip(*closed_line)]
+                    plt.plot(x, y, 'g')
+                    x, y, z = [list(l) for l in zip(*line)]
+                    plt.plot(x, y, 'r')
+                    plt.show()
+                    
                 closed_lines.append(closed_line)
             closed_lbe[elevation] = closed_lines
         closed_lines_by_elevation_list.append(closed_lbe)
