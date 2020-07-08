@@ -8,16 +8,20 @@ from osgeo import gdal
 import drawSvg as draw
 
 from contour_utils import ContourCloser, ContourCombiner
+from contour_utils import Contour, Pt
+
 
 def extract_layer_features(gis_data, layer_name):
     # We're only interested in the elevation contours.  We'll read each
     # feature in this layer and convert it to a simple json representation
     layer = gis_data.GetLayerByName(layer_name)
     n_features = layer.GetFeatureCount()
-    features = [layer.GetFeature(idx) for idx in range(1,n_features+1)]
+    features = [layer.GetFeature(idx) for idx in range(1, n_features+1)]
     features_json = [json.loads(f.ExportToJson()) for f in features]
     return features_json
 
+
+# def get_topo_contours(topo_features_json):
 
 def get_topo_lines(topo_features_json):
     topo_lines = collections.defaultdict(list)
@@ -39,6 +43,7 @@ def extents(gis_data_list, layer_name):
     lat_min = min(lat_mins)
     lat_max = max(lat_maxes)
     return lat_min, lat_max, lon_min, lon_max
+
 
 def interpolate_color(cmin, cmax, cval):
     cval = [
@@ -62,11 +67,12 @@ WATER_LAYER_NAME = "NHDWaterbody"
 # gdal python wrappers don't raise exceptions by default
 gdal.UseExceptions()
 
+
 if __name__ == "__main__":
 
     data = [gdal.ogr.Open(fname) for fname in GIS_FILES]
 
-    # just for initial check, print the lauyer names
+    # just for initial check, print the layer names
     n_layers = data[0].GetLayerCount()
     layers = [data[0].GetLayerByIndex(idx) for idx in range(n_layers)]
     print([l.GetName() for l in layers])
@@ -86,8 +92,6 @@ if __name__ == "__main__":
         for _data in data
     ]
 
-    
-    
     closed_lines_by_elevation_list = []
     for bbox, lbe in zip(bbox_list, lines_by_elevation_list):
         
@@ -109,9 +113,9 @@ if __name__ == "__main__":
                         [bbox[2], bbox[3], bbox[3], bbox[2]],
                         'k'
                     )
-                    x, y, z = [list(l) for l in zip(*closed_line)]
+                    x, y, _ = [list(l) for l in zip(*closed_line)]
                     plt.plot(x, y, 'g')
-                    x, y, z = [list(l) for l in zip(*line)]
+                    x, y, _ = [list(l) for l in zip(*line)]
                     plt.plot(x, y, 'r')
                     plt.show()
                     
@@ -168,10 +172,10 @@ if __name__ == "__main__":
     min_elev, max_elev = elevations[0], elevations[-1]
     # remember we're working with coordinates in degrees, so the pixel
     # scale is very large and stroke width needs to be very small
-    PIXEL_SCALE=10000
-    STROKE_WIDTH=1.0/PIXEL_SCALE
-    STROKE_COLOR_MIN=(0, 64, 0)
-    STROKE_COLOR_MAX=(0, 255, 0)
+    PIXEL_SCALE = 10000
+    STROKE_WIDTH = 1.0 / PIXEL_SCALE
+    STROKE_COLOR_MIN = (0, 64, 0)
+    STROKE_COLOR_MAX = (0, 255, 0)
     d = draw.Drawing(
         *xfrm_pts([(lon_max-lon_min, lat_max-lat_min)]),
         origin=[*xfrm_pts([(lon_min, lat_min)])],
@@ -219,7 +223,6 @@ if __name__ == "__main__":
             # fill='#eeeeee',
             stroke="#FF4444",
         ))
-        
 
     d.setPixelScale(PIXEL_SCALE)  # Set number of pixels per geometry unit
     # d.setRenderSize(400,200)  # Alternative to setPixelScale

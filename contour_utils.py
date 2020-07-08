@@ -3,13 +3,17 @@ This assumes that points are in (lat, lon) order!!
 """
 import math
 from dataclasses import dataclass
+from typing import List
 
+import more_itertools
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 EDGE_ORDER = ["N", "W", "S", "E"]
 EDGE_IDX = {edge: idx for idx, edge in enumerate(EDGE_ORDER)}
 EDGE_WINDING_DIR = {"N": -1, "W": -1, "S": 1, "E": 1}
+
 
 @dataclass
 class Pt:
@@ -20,6 +24,34 @@ class Pt:
         return math.sqrt(
             (self.lat-other_pt.lat)**2 + (self.lon-other_pt.lon)**2
         )
+
+
+@dataclass
+class Contour:
+    id: str
+    dataset_id: str
+    elevation: float
+    points: List[Pt]
+
+
+def plot_line(line, **kwargs):
+    x, y = [list(coords) for coords in zip(*[(pt.lon, pt.lat) for pt in line])]
+    plt.plot(x, y, **kwargs)
+
+
+def debug_plot(lines):
+    colors = ['r', 'g', 'b', 'c', 'y', 'm', 'orange', 'turquoise', 'violet', 'deeppink']
+    for lidx, line in enumerate(lines):
+        c = colors[lidx % len(colors)]
+        plot_line(line, color=c)
+        jitter = 1e-4*np.random.rand(2)
+
+        pt = line[0]
+        plt.scatter([pt.lon+jitter[0]], [pt.lat+jitter[1]], marker='o', color=c)
+        plt.text(pt.lon+jitter[0], pt.lat+jitter[1], f"{lidx}", {"color": c})
+
+        pt = line[-1]
+        plt.scatter([pt.lon+jitter[0]], [pt.lat+jitter[1]], marker='x', color=c)
 
 
 def winding_dir_order(edge, pt_start, pt_end):
@@ -68,7 +100,6 @@ class ContourBase:
         self.eps = eps
         self.error = None
 
-    
     def pt_equals(self, pt_a, pt_b):
         dist = pt_a.dist_to(pt_b)
         return abs(dist) < self.eps
@@ -96,7 +127,6 @@ class ContourBase:
         )
 
     
-
 class ContourCombiner(ContourBase):
 
     def __init__(self, bbox, eps=1e-6):
@@ -113,61 +143,68 @@ class ContourCombiner(ContourBase):
             combined_contours_by_elevation[elevation] = combined_contours
         return combined_contours_by_elevation
 
+    def is_valid_contour(self, line):
+        return (
+            self.pt_equals(line[0], line[-1]) or
+            (self.is_edge_point(line[0]) and self.is_edge_point(line[-1]))
+        )
+
     def _combine_contours(self, contour_list):
         print(f"number of contours before combining: {len(contour_list)}")
-        combined_contour_list = []
-        while contour_list:
+        incomplete_contour_list, complete_contour_list = [
+            list(l) for l in
+            more_itertools.partition(self.is_valid_contour, contour_list)
+        ]
+        while incomplete_contour_list:
             # get a line to find matches for
-            cur_line = contour_list.pop()
+            cur_line = incomplete_contour_list.pop()
             # now search the rest of the list, extending the contour
             # as much as possible
-            while True:
-                # test if this is a valid contour (is closed or
-                # touches a border)
-                if (
-                    self.pt_equals(cur_line[0], cur_line[-1]) or
-                    (
-                        self.is_edge_point(cur_line[0]) and
-                        self.is_edge_point(cur_line[-1])
-                    )
-                ):
-                    # this is a valid line, we're done
+            while incomplete_contour_list:
+                # if we've completed the contour, stop
+                if self.is_valid_contour(cur_line):
                     break
-
-                # otherwise we need to find extensions
+                # see if we can extend the beginning of the contour
                 if not self.is_edge_point(cur_line[0]):
                     dists = np.array([
                         cur_line[0].dist_to(candidate[-1])
-                        for candidate in contour_list
+                        for candidate in incomplete_contour_list
                     ])
                     best_match_idx = np.argmin(dists)
                     best_match_dist = dists[best_match_idx]
                     if best_match_dist > 1e-6:
                         print(f"WARNING: best match dist is {best_match_dist}")
-                    extension = contour_list[best_match_idx]
+                    extension = incomplete_contour_list[best_match_idx]
                     cur_line = extension + cur_line
-                    del contour_list[best_match_idx]
+                    del incomplete_contour_list[best_match_idx]
                     continue
+                # see if we can extend the end of the contour
                 if not self.is_edge_point(cur_line[-1]):
                     dists = np.array([
                         cur_line[-1].dist_to(candidate[0])
-                        for candidate in contour_list
+                        for candidate in incomplete_contour_list
                     ])
                     best_match_idx = np.argmin(dists)
                     best_match_dist = dists[best_match_idx]
                     if best_match_dist > 1e-6:
                         print(f"WARNING: best match dist is {best_match_dist}")
-                    extension = contour_list[best_match_idx]
+                    extension = incomplete_contour_list[best_match_idx]
                     cur_line = cur_line + extension
-                    del contour_list[best_match_idx]
+                    del incomplete_contour_list[best_match_idx]
                     continue
                 raise ValueError("Impossible, we can't get here!")
-            else:
-                # we got through the whole list without finding an extension
-                break
-            combined_contour_list.append(cur_line)
-        print(f"number of contours after combining: {len(combined_contour_list)}")
-        return combined_contour_list
+
+            if not self.is_valid_contour(cur_line):
+                plt.plot()
+                debug_plot(contour_list)
+                plot_line(cur_line, lw=2, ls=":", color='r')
+                plt.show()
+                raise ValueError("Found contour that could not be completed!")
+
+            complete_contour_list.append(cur_line)
+
+        print(f"number of contours after combining: {len(complete_contour_list)}")
+        return complete_contour_list
 
 
 class ContourCloser(ContourBase):
@@ -182,7 +219,7 @@ class ContourCloser(ContourBase):
         elif cur_edge == "E":
             return Pt(lat=self.lat_max, lon=self.lon_max)
         else:
-            raise ValueError(f"unrecognized edge {edge}")
+            raise ValueError(f"unrecognized edge {cur_edge}")
 
     def fix_bad_point(self, point, endpoint):
         
@@ -248,7 +285,6 @@ class ContourCloser(ContourBase):
                 return points  # fixing closed boundary
             last_point_edge = self.get_point_edge(last_point)
             
-        
         if last_point_edge == first_point_edge:
             if winding_dir_order(first_point_edge, last_point, first_point):
                 print("closing immediately")
