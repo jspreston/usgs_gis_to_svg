@@ -29,28 +29,50 @@ class Pt:
 @dataclass
 class Contour:
     id: str
-    dataset_id: str
     elevation: float
     points: List[Pt]
 
+    @property
+    def start(self):
+        return self.points[0]
 
-def plot_line(line, **kwargs):
-    x, y = [list(coords) for coords in zip(*[(pt.lon, pt.lat) for pt in line])]
+    @property
+    def end(self):
+        return self.points[-1]
+
+    def prepend_contour(self, other: "Contour"):
+        self.points = other.points + self.points
+
+    def append_contour(self, other: "Contour"):
+        self.points = self.points + other.points
+
+    def prepend_point(self, point: Pt):
+        self.points.insert(0, point)
+
+    def append_point(self, point: Pt):
+        self.points.append(point)
+
+    def reverse(self):
+        self.points = list(reversed(self.points))
+
+
+def plot_line(line: Contour, **kwargs):
+    x, y = [list(coords) for coords in zip(*[(pt.lon, pt.lat) for pt in line.points])]
     plt.plot(x, y, **kwargs)
 
 
-def debug_plot(lines):
+def debug_plot(lines: List[Contour]):
     colors = ['r', 'g', 'b', 'c', 'y', 'm', 'orange', 'turquoise', 'violet', 'deeppink']
     for lidx, line in enumerate(lines):
         c = colors[lidx % len(colors)]
         plot_line(line, color=c)
         jitter = 1e-4*np.random.rand(2)
 
-        pt = line[0]
+        pt = line.start
         plt.scatter([pt.lon+jitter[0]], [pt.lat+jitter[1]], marker='o', color=c)
         plt.text(pt.lon+jitter[0], pt.lat+jitter[1], f"{lidx}", {"color": c})
 
-        pt = line[-1]
+        pt = line.end
         plt.scatter([pt.lon+jitter[0]], [pt.lat+jitter[1]], marker='x', color=c)
 
 
@@ -80,8 +102,10 @@ def get_next_edge(cur_edge):
     next_edge = EDGE_ORDER[(cur_edge_idx + 1) % 4]  # next edge, wrapped
     return next_edge
 
+
 def convert_to_pts(line):
     return [Pt(lat=pt[1], lon=pt[0]) for pt in line]
+
 
 def convert_from_pts(pt_line):
     return [(pt.lon, pt.lat, 0.0) for pt in pt_line]
@@ -135,18 +159,14 @@ class ContourCombiner(ContourBase):
     def combine_contours(self, contours_by_elevation):
         combined_contours_by_elevation = {}
         for elevation, contours in contours_by_elevation.items():
-            contour_lines = [convert_to_pts(line) for line in contours]
-            combined_contour_lines = self._combine_contours(contour_lines)
-            combined_contours = [
-                convert_from_pts(line) for line in combined_contour_lines
-            ]
+            combined_contours = self._combine_contours(contours)
             combined_contours_by_elevation[elevation] = combined_contours
         return combined_contours_by_elevation
 
-    def is_valid_contour(self, line):
+    def is_valid_contour(self, contour):
         return (
-            self.pt_equals(line[0], line[-1]) or
-            (self.is_edge_point(line[0]) and self.is_edge_point(line[-1]))
+            self.pt_equals(contour.start, contour.end) or
+            (self.is_edge_point(contour.start) and self.is_edge_point(contour.end))
         )
 
     def _combine_contours(self, contour_list):
@@ -165,41 +185,44 @@ class ContourCombiner(ContourBase):
                 if self.is_valid_contour(cur_line):
                     break
                 # see if we can extend the beginning of the contour
-                if not self.is_edge_point(cur_line[0]):
+                if not self.is_edge_point(cur_line.start):
                     dists = np.array([
-                        cur_line[0].dist_to(candidate[-1])
+                        cur_line.start.dist_to(candidate.end)
                         for candidate in incomplete_contour_list
                     ])
                     best_match_idx = np.argmin(dists)
                     best_match_dist = dists[best_match_idx]
                     if best_match_dist > 1e-6:
                         print(f"WARNING: best match dist is {best_match_dist}")
+                        break
                     extension = incomplete_contour_list[best_match_idx]
-                    cur_line = extension + cur_line
+                    cur_line.prepend_contour(extension)
                     del incomplete_contour_list[best_match_idx]
                     continue
                 # see if we can extend the end of the contour
-                if not self.is_edge_point(cur_line[-1]):
+                if not self.is_edge_point(cur_line.end):
                     dists = np.array([
-                        cur_line[-1].dist_to(candidate[0])
+                        cur_line.end.dist_to(candidate.start)
                         for candidate in incomplete_contour_list
                     ])
                     best_match_idx = np.argmin(dists)
                     best_match_dist = dists[best_match_idx]
                     if best_match_dist > 1e-6:
                         print(f"WARNING: best match dist is {best_match_dist}")
+                        break
                     extension = incomplete_contour_list[best_match_idx]
-                    cur_line = cur_line + extension
+                    cur_line.append_contour(extension)
                     del incomplete_contour_list[best_match_idx]
                     continue
                 raise ValueError("Impossible, we can't get here!")
 
             if not self.is_valid_contour(cur_line):
+                print(f"Error with contour {cur_line.id}")
                 plt.plot()
                 debug_plot(contour_list)
                 plot_line(cur_line, lw=2, ls=":", color='r')
                 plt.show()
-                raise ValueError("Found contour that could not be completed!")
+                # raise ValueError("Found contour that could not be completed!")
 
             complete_contour_list.append(cur_line)
 
@@ -244,19 +267,14 @@ class ContourCloser(ContourBase):
     
     def close_contour(self, line):
         self.error = False
-        print(f"line has {len(line)} points")
-        points = convert_to_pts(line)
-        points = self._close_contour(points)
-        line = convert_from_pts(points)
-        print(f"final line has {len(line)} points")
-        return line
+        print(f"line has {len(line.points)} points")
+        closed_line = self._close_contour(line)
+        print(f"final line has {len(closed_line.points)} points")
+        return closed_line
     
-    def _close_contour(self, points):
+    def _close_contour(self, points: Contour):
         
-        first_point = points[0]
-        last_point = points[-1]
-
-        if self.pt_equals(first_point, last_point):
+        if self.pt_equals(points.start, points.end):
             # it's already closed, nothing to do
             print("already closed!")
             return points
@@ -264,47 +282,46 @@ class ContourCloser(ContourBase):
         # we have to fix some contours that seem like they should end
         # on a map boundary but don't quite touch the edge
         try:
-            first_point_edge = self.get_point_edge(first_point)
+            first_point_edge = self.get_point_edge(points.start)
         except ValueError:
             print("fixing bad first point")
             self.error = True
-            first_point, is_boundary = self.fix_bad_point(first_point, last_point)
-            points = [first_point] + points
+            first_point, is_boundary = self.fix_bad_point(points.start, points.end)
+            points.prepend_point(first_point)
             if not is_boundary:
                 return points  # fixing closed boundary
             first_point_edge = self.get_point_edge(first_point)
             
         try:
-            last_point_edge = self.get_point_edge(last_point)
+            last_point_edge = self.get_point_edge(points.end)
         except ValueError:
             print("fixing bad last point")
             self.error = True
-            last_point, is_boundary = self.fix_bad_point(last_point, first_point)
-            points = points + [last_point]
+            last_point, is_boundary = self.fix_bad_point(points.end, points.start)
+            points.append_point(last_point)
             if not is_boundary:
                 return points  # fixing closed boundary
             last_point_edge = self.get_point_edge(last_point)
             
         if last_point_edge == first_point_edge:
-            if winding_dir_order(first_point_edge, last_point, first_point):
+            if winding_dir_order(first_point_edge, points.end, points.start):
                 print("closing immediately")
                 # just close the contour directly to start
-                points = points + [first_point]
+                points.append_point(points.start)
                 return points
             
         # otherwise we need to move to the next corner
         cur_edge = last_point_edge
         print(f"adding initial corner point (end of {cur_edge} edge)")
-        next_edge = get_next_edge(cur_edge)
-        points = points + [self.next_bb_corner(cur_edge)]
+        points.append_point(self.next_bb_corner(cur_edge))
 
         while True:
-            # we've come aroud to the first point, just close the contour
+            # we've come around to the first point, just close the contour
             if cur_edge == first_point_edge:
                 print(f"found final point (on {cur_edge} edge), closing and finishing")
-                points = points + [first_point]
+                points.append_point(points.start)
                 return points
             # add the corner and keep going
             print(f"adding corner point (end of {cur_edge} edge)")
-            points = points + [self.next_bb_corner(cur_edge)]
+            points.append_point(self.next_bb_corner(cur_edge))
             cur_edge = get_next_edge(cur_edge)

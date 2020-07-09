@@ -10,6 +10,11 @@ import drawSvg as draw
 from contour_utils import ContourCloser, ContourCombiner
 from contour_utils import Contour, Pt
 
+SEGMENTS_TO_FLIP = {
+    "031508f3-89ca-43ee-8f98-aa1a43f849cc_206",
+    "8b03d49b-0e59-4f7a-91f5-7efd4d25046b_216",
+}
+
 
 def extract_layer_features(gis_data, layer_name):
     # We're only interested in the elevation contours.  We'll read each
@@ -21,14 +26,20 @@ def extract_layer_features(gis_data, layer_name):
     return features_json
 
 
-# def get_topo_contours(topo_features_json):
-
-def get_topo_lines(topo_features_json):
+def get_topo_contours(topo_features_json):
     topo_lines = collections.defaultdict(list)
     # collect lines by elevation
     for f in topo_features_json:
-        elevation = f["properties"]["ContourElevation"]
-        topo_lines[elevation].append(f['geometry']['coordinates'][0])
+        props = f["properties"]
+        elevation = props["ContourElevation"]
+        id = props["Permanent_Identifier"] + "_" + str(f["id"])
+        line = f['geometry']['coordinates'][0]
+        points = [Pt(lat=pt[1], lon=pt[0]) for pt in line]
+        contour = Contour(id=id, elevation=elevation, points=points)
+        if contour.id in SEGMENTS_TO_FLIP:
+            print(f"flipping segment {contour.id}")
+            contour.reverse()
+        topo_lines[elevation].append(contour)
     return dict(topo_lines)
 
 
@@ -83,7 +94,7 @@ if __name__ == "__main__":
     ]
 
     lines_by_elevation_list = [
-        get_topo_lines(topo_json) for topo_json in topo_jsons
+        get_topo_contours(topo_json) for topo_json in topo_jsons
     ]
 
     # create closed contours
@@ -163,7 +174,7 @@ if __name__ == "__main__":
         sorted(lines_by_elevation.items(), key=lambda x: x[0])
     )
     sorted_lines = [
-        [(elev, [(pt[0], pt[1]) for pt in line]) for line in lines]
+        [(elev, [(pt.lon, pt.lat) for pt in line.points]) for line in lines]
         for elev, lines in sorted_lines
     ]
     sorted_lines = list(itertools.chain(*sorted_lines))
