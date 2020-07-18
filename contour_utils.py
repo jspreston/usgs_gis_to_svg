@@ -1,6 +1,3 @@
-"""
-This assumes that points are in (lat, lon) order!!
-"""
 import math
 from dataclasses import dataclass
 from typing import List
@@ -55,22 +52,25 @@ class Contour:
     def reverse(self):
         self.points = list(reversed(self.points))
 
+    def coord_lists(self):
+        points = [(pt.lon, pt.lat) for pt in self.points]
+        return [list(l) for l in zip(*points)]
 
-def plot_line(line: Contour, **kwargs):
-    x, y = [list(coords) for coords in zip(*[(pt.lon, pt.lat) for pt in line.points])]
-    plt.plot(x, y, **kwargs)
+    def plot(self, **kwargs):
+        x, y = self.coord_lists()
+        plt.plot(x, y, **kwargs)
 
 
 def debug_plot(lines: List[Contour]):
     colors = ['r', 'g', 'b', 'c', 'y', 'm', 'orange', 'turquoise', 'violet', 'deeppink']
     for lidx, line in enumerate(lines):
         c = colors[lidx % len(colors)]
-        plot_line(line, color=c)
+        line.plot(color=c)
         jitter = 1e-4*np.random.rand(2)
 
         pt = line.start
         plt.scatter([pt.lon+jitter[0]], [pt.lat+jitter[1]], marker='o', color=c)
-        plt.text(pt.lon+jitter[0], pt.lat+jitter[1], f"{lidx}", {"color": c})
+        plt.text(pt.lon+jitter[0], pt.lat+jitter[1], f"{line.id}", {"color": c})
 
         pt = line.end
         plt.scatter([pt.lon+jitter[0]], [pt.lat+jitter[1]], marker='x', color=c)
@@ -101,14 +101,6 @@ def get_next_edge(cur_edge):
     cur_edge_idx = EDGE_IDX[cur_edge]
     next_edge = EDGE_ORDER[(cur_edge_idx + 1) % 4]  # next edge, wrapped
     return next_edge
-
-
-def convert_to_pts(line):
-    return [Pt(lat=pt[1], lon=pt[0]) for pt in line]
-
-
-def convert_from_pts(pt_line):
-    return [(pt.lon, pt.lat, 0.0) for pt in pt_line]
 
 
 class ContourBase:
@@ -147,7 +139,16 @@ class ContourBase:
             return "E"
         raise ValueError(
             f"point {pt.lat, pt.lon} not within {self.eps} tolerance of "
-            f"bbox edges [{self.lat_min}, {self.lat_max}, {self.lon_min}, {self.lon_max}]"
+            "bbox edges "
+            f"[{self.lat_min}, {self.lat_max}, {self.lon_min}, {self.lon_max}]"
+        )
+
+    def plot_bbox(self, **kwargs):
+        print(f"bbox: [{self.lon_min}, {self.lon_max}, {self.lat_min}, {self.lat_max}]")
+        plt.plot(
+            [self.lon_min, self.lon_min, self.lon_max, self.lon_max, self.lon_min],
+            [self.lat_min, self.lat_max, self.lat_max, self.lat_min, self.lat_min],
+            **kwargs
         )
 
     
@@ -192,7 +193,7 @@ class ContourCombiner(ContourBase):
                     ])
                     best_match_idx = np.argmin(dists)
                     best_match_dist = dists[best_match_idx]
-                    if best_match_dist > 1e-6:
+                    if best_match_dist > self.eps:
                         print(f"WARNING: best match dist is {best_match_dist}")
                         break
                     extension = incomplete_contour_list[best_match_idx]
@@ -207,7 +208,7 @@ class ContourCombiner(ContourBase):
                     ])
                     best_match_idx = np.argmin(dists)
                     best_match_dist = dists[best_match_idx]
-                    if best_match_dist > 1e-6:
+                    if best_match_dist > self.eps:
                         print(f"WARNING: best match dist is {best_match_dist}")
                         break
                     extension = incomplete_contour_list[best_match_idx]
@@ -218,9 +219,11 @@ class ContourCombiner(ContourBase):
 
             if not self.is_valid_contour(cur_line):
                 print(f"Error with contour {cur_line.id}")
-                plt.plot()
+                plt.figure()
+                plt.clf()
                 debug_plot(contour_list)
-                plot_line(cur_line, lw=2, ls=":", color='r')
+                self.plot_bbox(color='k')
+                cur_line.plot(lw=4, ls=":", color='r')
                 plt.show()
                 # raise ValueError("Found contour that could not be completed!")
 
@@ -264,7 +267,25 @@ class ContourCloser(ContourBase):
         elif idx == 4:
             return endpoint, False
         raise ValueError(f"huh? unknown idx {idx}")
-    
+
+    def close_contours(self, lines_by_elevation):
+        closed_lbe = {}
+        for elevation, lines in lines_by_elevation.items():
+            closed_lines = []
+            for line in lines:
+                closed_line = self.close_contour(line)
+
+                if self.error:
+                    plt.figure('contour test')
+                    self.plot_bbox(color='k')
+                    closed_line.plot(color="g")
+                    line.plot(color="r")
+                    plt.show()
+
+                closed_lines.append(closed_line)
+            closed_lbe[elevation] = closed_lines
+        return closed_lbe
+
     def close_contour(self, line):
         self.error = False
         print(f"line has {len(line.points)} points")

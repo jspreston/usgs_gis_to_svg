@@ -10,9 +10,22 @@ import drawSvg as draw
 from contour_utils import ContourCloser, ContourCombiner
 from contour_utils import Contour, Pt
 
+EPS = 1e-5
+
+# There are occasional contour segments that are wound the wrong way.  This is super
+# annoying, but I don't know an automatic way to detect them, so these were manually
+# identified.
 SEGMENTS_TO_FLIP = {
     "031508f3-89ca-43ee-8f98-aa1a43f849cc_206",
     "8b03d49b-0e59-4f7a-91f5-7efd4d25046b_216",
+    #"cc2cf73d-6fdf-42e0-8e0b-7464c16bce20_99",
+    "1a098a3c-73b2-484e-83d0-f4d36cf173f9_221",
+    "9fdb7077-85e8-4093-b5dc-43bb17a25d82_196",
+    "1bdca8ad-5ab6-4d78-923b-ed76cb671510_172",
+    "7fcdf282-cfef-4f40-bf27-e583a0e7ba07_115",
+    "9630c4e6-efb9-4b2f-b1f8-b7add3a78e7b_7",
+    "19886904-4021-41ed-ba78-3899ac975fde_219",
+    "bb75a478-d7d6-4f68-a8b9-a20b134c8bab_117",
 }
 
 
@@ -32,6 +45,8 @@ def get_topo_contours(topo_features_json):
     for f in topo_features_json:
         props = f["properties"]
         elevation = props["ContourElevation"]
+        # it turns out that we can have segments with duplicate Permanent_Identifier
+        # IDs, so we append the order index to deduplicate.
         id = props["Permanent_Identifier"] + "_" + str(f["id"])
         line = f['geometry']['coordinates'][0]
         points = [Pt(lat=pt[1], lon=pt[0]) for pt in line]
@@ -53,7 +68,7 @@ def extents(gis_data_list, layer_name):
     lon_max = max(lon_maxes)
     lat_min = min(lat_mins)
     lat_max = max(lat_maxes)
-    return lat_min, lat_max, lon_min, lon_max
+    return lon_min, lon_max, lat_min, lat_max
 
 
 def interpolate_color(cmin, cmax, cval):
@@ -103,36 +118,8 @@ if __name__ == "__main__":
         for _data in data
     ]
 
-    closed_lines_by_elevation_list = []
-    for bbox, lbe in zip(bbox_list, lines_by_elevation_list):
-        
-        ccomb = ContourCombiner(bbox, eps=1e-6)
-        combined_lbe = ccomb.combine_contours(lbe)
-        
-        cclose = ContourCloser(bbox)
-        closed_lbe = {}
-        for elevation, lines in combined_lbe.items():
-            closed_lines = []
-            for line in lines:
-                closed_line = cclose.close_contour(line)
-                
-                if cclose.error:
-                    import matplotlib.pyplot as plt
-                    plt.figure('contour test')
-                    plt.plot(
-                        [bbox[0], bbox[0], bbox[1], bbox[1]],
-                        [bbox[2], bbox[3], bbox[3], bbox[2]],
-                        'k'
-                    )
-                    x, y, _ = [list(l) for l in zip(*closed_line)]
-                    plt.plot(x, y, 'g')
-                    x, y, _ = [list(l) for l in zip(*line)]
-                    plt.plot(x, y, 'r')
-                    plt.show()
-                    
-                closed_lines.append(closed_line)
-            closed_lbe[elevation] = closed_lines
-        closed_lines_by_elevation_list.append(closed_lbe)
+    # calculate the global bounding box
+    bbox_full = extents(data, TOPO_LAYER_NAME)
 
     def combine_dicts(dict_list):
         out_dict = collections.defaultdict(list)
@@ -141,11 +128,14 @@ if __name__ == "__main__":
                 out_dict[k].extend(v)
         return out_dict
 
-    lines_by_elevation = combine_dicts(closed_lines_by_elevation_list)
-        
-    # this layer comes with extent information that we can use when
-    # defining the svg
-    lat_min, lat_max, lon_min, lon_max = extents(data, TOPO_LAYER_NAME)
+    lines_by_elevation = combine_dicts(lines_by_elevation_list)
+    ccomb = ContourCombiner(bbox_full, eps=EPS)
+    combined_lbe = ccomb.combine_contours(lines_by_elevation)
+    cclose = ContourCloser(bbox_full, eps=EPS)
+    closed_lbe = cclose.close_contours(combined_lbe)
+
+    # compute the center and aspect ratio
+    lon_min, lon_max, lat_min, lat_max = bbox_full
     lat_center = (lat_max + lat_min) / 2.0
     lon_center = (lon_max + lon_min) / 2.0
     print(f"center: {lat_center}, {lon_center}")
