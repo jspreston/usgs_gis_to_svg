@@ -24,6 +24,20 @@ class Pt:
 
 
 @dataclass
+class Bbox:
+    lon_min: float
+    lon_max: float
+    lat_min: float
+    lat_max: float
+
+    def center(self):
+        # compute the center and aspect ratio
+        lat_center = (self.lat_max + self.lat_min) / 2.0
+        lon_center = (self.lon_max + self.lon_min) / 2.0
+        return Pt(lat=lat_center, lon=lon_center)
+
+
+@dataclass
 class Contour:
     id: str
     elevation: float
@@ -61,7 +75,17 @@ class Contour:
         plt.plot(x, y, **kwargs)
 
 
-def debug_plot(lines: List[Contour]):
+def combine_bboxes(bboxes: List[Bbox]) -> Bbox:
+    """Get containing bounding box"""
+    lon_min = min([bbox.lon_min for bbox in bboxes])
+    lon_max = max([bbox.lon_max for bbox in bboxes])
+    lat_min = min([bbox.lat_min for bbox in bboxes])
+    lat_max = max([bbox.lat_max for bbox in bboxes])
+    return Bbox(lon_min=lon_min, lon_max=lon_max, lat_min=lat_min, lat_max=lat_max)
+
+
+def debug_plot(lines: List[Contour], show_ids=True, text_params=None):
+    text_params = text_params or {}
     colors = ['r', 'g', 'b', 'c', 'y', 'm', 'orange', 'turquoise', 'violet', 'deeppink']
     for lidx, line in enumerate(lines):
         c = colors[lidx % len(colors)]
@@ -70,7 +94,13 @@ def debug_plot(lines: List[Contour]):
 
         pt = line.start
         plt.scatter([pt.lon+jitter[0]], [pt.lat+jitter[1]], marker='o', color=c)
-        plt.text(pt.lon+jitter[0], pt.lat+jitter[1], f"{line.id}", {"color": c})
+        if show_ids:
+            plt.text(
+                pt.lon+jitter[0], pt.lat+jitter[1],
+                f"{line.id}",
+                {"color": c},
+                **text_params
+            )
 
         pt = line.end
         plt.scatter([pt.lon+jitter[0]], [pt.lat+jitter[1]], marker='x', color=c)
@@ -105,14 +135,11 @@ def get_next_edge(cur_edge):
 
 class ContourBase:
     
-    def __init__(self, bbox, eps=1e-6):
+    def __init__(self, bbox: Bbox, eps=1e-6):
         """
         bbox should be [lat_min, lat_max, lon_min, lon_max]
         """
-        self.lon_min = bbox[0]
-        self.lon_max = bbox[1]
-        self.lat_min = bbox[2]
-        self.lat_max = bbox[3]
+        self.bbox = bbox
         self.eps = eps
         self.error = None
 
@@ -129,25 +156,26 @@ class ContourBase:
         return False
     
     def get_point_edge(self, pt):
-        if abs(pt.lat-self.lat_max) < self.eps:
+        if abs(pt.lat-self.bbox.lat_max) < self.eps:
             return "N"
-        if abs(pt.lat-self.lat_min) < self.eps:
+        if abs(pt.lat-self.bbox.lat_min) < self.eps:
             return "S"
-        if abs(pt.lon-self.lon_min) < self.eps:
+        if abs(pt.lon-self.bbox.lon_min) < self.eps:
             return "W"
-        if abs(pt.lon-self.lon_max) < self.eps:
+        if abs(pt.lon-self.bbox.lon_max) < self.eps:
             return "E"
         raise ValueError(
             f"point {pt.lat, pt.lon} not within {self.eps} tolerance of "
             "bbox edges "
-            f"[{self.lat_min}, {self.lat_max}, {self.lon_min}, {self.lon_max}]"
+            f"{self.bbox}"
         )
 
     def plot_bbox(self, **kwargs):
-        print(f"bbox: [{self.lon_min}, {self.lon_max}, {self.lat_min}, {self.lat_max}]")
+        print(f"bbox: {self.bbox}")
+        bb = self.bbox
         plt.plot(
-            [self.lon_min, self.lon_min, self.lon_max, self.lon_max, self.lon_min],
-            [self.lat_min, self.lat_max, self.lat_max, self.lat_min, self.lat_min],
+            [bb.lon_min, bb.lon_min, bb.lon_max, bb.lon_max, bb.lon_min],
+            [bb.lat_min, bb.lat_max, bb.lat_max, bb.lat_min, bb.lat_min],
             **kwargs
         )
 
@@ -237,33 +265,33 @@ class ContourCloser(ContourBase):
 
     def next_bb_corner(self, cur_edge):
         if cur_edge == "N":
-            return Pt(lat=self.lat_max, lon=self.lon_min)
+            return Pt(lat=self.bbox.lat_max, lon=self.bbox.lon_min)
         elif cur_edge == "W":
-            return Pt(lat=self.lat_min, lon=self.lon_min)
+            return Pt(lat=self.bbox.lat_min, lon=self.bbox.lon_min)
         elif cur_edge == "S":
-            return Pt(lat=self.lat_min, lon=self.lon_max)
+            return Pt(lat=self.bbox.lat_min, lon=self.bbox.lon_max)
         elif cur_edge == "E":
-            return Pt(lat=self.lat_max, lon=self.lon_max)
+            return Pt(lat=self.bbox.lat_max, lon=self.bbox.lon_max)
         else:
             raise ValueError(f"unrecognized edge {cur_edge}")
 
     def fix_bad_point(self, point, endpoint):
         
-        n_dist = abs(point.lat - self.lat_max)
-        w_dist = abs(point.lon - self.lon_min)
-        s_dist = abs(point.lat - self.lat_min)
-        e_dist = abs(point.lon - self.lon_max)
+        n_dist = abs(point.lat - self.bbox.lat_max)
+        w_dist = abs(point.lon - self.bbox.lon_min)
+        s_dist = abs(point.lat - self.bbox.lat_min)
+        e_dist = abs(point.lon - self.bbox.lon_max)
         pt_dist = point.dist_to(endpoint)
         distances = np.array([n_dist, w_dist, s_dist, e_dist, pt_dist])
         idx = np.argmin(distances)
         if idx == 0:  # N
-            return Pt(lat=self.lat_max, lon=point.lon), True
+            return Pt(lat=self.bbox.lat_max, lon=point.lon), True
         elif idx == 1:  # W
-            return Pt(lat=point.lat, lon=self.lon_min), True
+            return Pt(lat=point.lat, lon=self.bbox.lon_min), True
         elif idx == 2:  # S
-            return Pt(lat=self.lat_min, lon=point.lon), True
+            return Pt(lat=self.bbox.lat_min, lon=point.lon), True
         elif idx == 3:  # E
-            return Pt(lat=point.lat, lon=self.lon_max), True
+            return Pt(lat=point.lat, lon=self.bbox.lon_max), True
         elif idx == 4:
             return endpoint, False
         raise ValueError(f"huh? unknown idx {idx}")

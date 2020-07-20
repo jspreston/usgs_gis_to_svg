@@ -3,35 +3,98 @@ import itertools
 import os
 import collections
 import math
+from typing import Any, Dict, List
 
 from osgeo import gdal
 import drawSvg as draw
 
-from contour_utils import ContourCloser, ContourCombiner
-from contour_utils import Contour, Pt
+import matplotlib.pyplot as plt
+
+from contour_utils import ContourCloser, ContourCombiner, debug_plot
+from contour_utils import Contour, Pt, Bbox, combine_bboxes
 
 EPS = 1e-5
+
+# just hard-code this for now
+BASE_DIR = "/home/jsam/winHome/Documents/personal/topo_maps"
+GIS_FILES = [
+    # os.path.join(BASE_DIR, "VECTOR_Seattle_North_WA_7_5_Min_GDB.zip"),  # NE
+    os.path.join(BASE_DIR, "VECTOR_Seattle_South_WA_7_5_Min_GDB.zip"),  # SE
+    # os.path.join(BASE_DIR, "VECTOR_Shilshole_Bay_WA_7_5_Min_GDB.zip"),  # NW
+    os.path.join(BASE_DIR, "VECTOR_Duwamish_Head_WA_7_5_Min_GDB.zip")  # SW
+]
+TOPO_LAYER_NAME = "Elev_Contour"
+WATER_LAYER_NAME = "NHDWaterbody"
 
 # There are occasional contour segments that are wound the wrong way.  This is super
 # annoying, but I don't know an automatic way to detect them, so these were manually
 # identified.
-SEGMENTS_TO_FLIP = {
+SEGMENTS_TO_FLIP = set([
+    # these first two seem right
     "031508f3-89ca-43ee-8f98-aa1a43f849cc_206",
     "8b03d49b-0e59-4f7a-91f5-7efd4d25046b_216",
-    #"cc2cf73d-6fdf-42e0-8e0b-7464c16bce20_99",
-    "1a098a3c-73b2-484e-83d0-f4d36cf173f9_221",
-    "9fdb7077-85e8-4093-b5dc-43bb17a25d82_196",
-    "1bdca8ad-5ab6-4d78-923b-ed76cb671510_172",
-    "7fcdf282-cfef-4f40-bf27-e583a0e7ba07_115",
-    "9630c4e6-efb9-4b2f-b1f8-b7add3a78e7b_7",
-    "19886904-4021-41ed-ba78-3899ac975fde_219",
-    "bb75a478-d7d6-4f68-a8b9-a20b134c8bab_117",
-}
+    #"cc2cf73d-6fdf-42e0-8e0b-7464c16bce20_99",  # not sure this one is right
+
+    "8525de_15",
+    "e964fb_16",
+    "66eee2_102",
+    "767ef7_118",
+    "c2031c_1",
+    # top of Duwamish Head
+    "ab17e0_24",
+    "efde8c_25",
+    # bottom of shilshole bay
+    "de2244_116",
+    "58b248_86",
+    "5ac4b4_13",
+    "46ede7_117",
+    "90c3ee_101",
+    "a273d3_14",
+    "a05b67_89",
+    # Seattle South west
+    "afbb6b_82",
+    "aed65_150",
+    "359cfc_101",
+    "959b58_2",
+    "8205f9_220",
+    "4dad78_219",
+    "359cfc_181",
+    "b3fa7e_223",
+    "4cdbb6_3",
+    # "9bfb93_118",
+    "bd4788_83",
+    "9c6afb_153",
+    "3e5f4a_85",
+    "d0cf59_225",
+    "d41db5_186",
+    "63177_185",
+    "57f876_115",
+
+
+
+
+    # these are from combining plats
+    # "1a098a3c-73b2-484e-83d0-f4d36cf173f9_221",
+    # "9fdb7077-85e8-4093-b5dc-43bb17a25d82_196",
+    # "1bdca8ad-5ab6-4d78-923b-ed76cb671510_172",
+    # "7fcdf282-cfef-4f40-bf27-e583a0e7ba07_115",
+    # "9630c4e6-efb9-4b2f-b1f8-b7add3a78e7b_7",
+    # "19886904-4021-41ed-ba78-3899ac975fde_219",
+    # "bb75a478-d7d6-4f68-a8b9-a20b134c8bab_117",
+])
+
+
+def _check_id(contour_id):
+    for to_flip_id in SEGMENTS_TO_FLIP:
+        if to_flip_id in contour_id:
+            return True
+    return False
 
 
 def extract_layer_features(gis_data, layer_name):
-    # We're only interested in the elevation contours.  We'll read each
-    # feature in this layer and convert it to a simple json representation
+    """
+    Take GDAL data format and extract the layer features as JSON
+    """
     layer = gis_data.GetLayerByName(layer_name)
     n_features = layer.GetFeatureCount()
     features = [layer.GetFeature(idx) for idx in range(1, n_features+1)]
@@ -39,7 +102,8 @@ def extract_layer_features(gis_data, layer_name):
     return features_json
 
 
-def get_topo_contours(topo_features_json):
+def get_topo_contours(topo_features_json) -> Dict[int, List[Contour]]:
+    """Convert JSON topographic contours into Contour objects"""
     topo_lines = collections.defaultdict(list)
     # collect lines by elevation
     for f in topo_features_json:
@@ -51,24 +115,17 @@ def get_topo_contours(topo_features_json):
         line = f['geometry']['coordinates'][0]
         points = [Pt(lat=pt[1], lon=pt[0]) for pt in line]
         contour = Contour(id=id, elevation=elevation, points=points)
-        if contour.id in SEGMENTS_TO_FLIP:
+        if _check_id(contour.id):  # should we flip it?
             print(f"flipping segment {contour.id}")
             contour.reverse()
         topo_lines[elevation].append(contour)
     return dict(topo_lines)
 
 
-def extents(gis_data_list, layer_name):
-    extents = [
-        gis_data.GetLayerByName(layer_name).GetExtent()
-        for gis_data in gis_data_list
-    ]
-    lon_mins, lon_maxes, lat_mins, lat_maxes = [list(l) for l in zip(*extents)]
-    lon_min = min(lon_mins)
-    lon_max = max(lon_maxes)
-    lat_min = min(lat_mins)
-    lat_max = max(lat_maxes)
-    return lon_min, lon_max, lat_min, lat_max
+def extents(gis_data, layer_name) -> Bbox:
+    """Get the bounding box of the given layer"""
+    lon_min, lon_max, lat_min, lat_max = gis_data.GetLayerByName(layer_name).GetExtent()
+    return Bbox(lon_min=lon_min, lon_max=lon_max, lat_min=lat_min, lat_max=lat_max)
 
 
 def interpolate_color(cmin, cmax, cval):
@@ -78,17 +135,6 @@ def interpolate_color(cmin, cmax, cval):
     ]
     return f"rgb({int(cval[0])}, {int(cval[1])}, {int(cval[2])})"
 
-
-# just hard-code this for now
-BASE_DIR = "/home/jsam/winHome/Documents/personal/topo_maps"
-GIS_FILES = [
-    os.path.join(BASE_DIR, "VECTOR_Seattle_North_WA_7_5_Min_GDB.zip"),
-    os.path.join(BASE_DIR, "VECTOR_Seattle_South_WA_7_5_Min_GDB.zip"),
-    os.path.join(BASE_DIR, "VECTOR_Shilshole_Bay_WA_7_5_Min_GDB.zip"),
-    os.path.join(BASE_DIR, "VECTOR_Duwamish_Head_WA_7_5_Min_GDB.zip")
-]
-TOPO_LAYER_NAME = "Elev_Contour"
-WATER_LAYER_NAME = "NHDWaterbody"
 
 # gdal python wrappers don't raise exceptions by default
 gdal.UseExceptions()
@@ -112,16 +158,12 @@ if __name__ == "__main__":
         get_topo_contours(topo_json) for topo_json in topo_jsons
     ]
 
-    # create closed contours
-    bbox_list = [
-        _data.GetLayerByName(TOPO_LAYER_NAME).GetExtent()
-        for _data in data
-    ]
-
+    bbox_list = [extents(_data, TOPO_LAYER_NAME) for _data in data]
     # calculate the global bounding box
-    bbox_full = extents(data, TOPO_LAYER_NAME)
+    bbox_full = combine_bboxes(bbox_list)
 
-    def combine_dicts(dict_list):
+    # combine
+    def combine_dicts(dict_list: List[Dict[Any, list]]) -> Dict[Any, list]:
         out_dict = collections.defaultdict(list)
         for d in dict_list:
             for k, v in d.items():
@@ -134,12 +176,15 @@ if __name__ == "__main__":
     cclose = ContourCloser(bbox_full, eps=EPS)
     closed_lbe = cclose.close_contours(combined_lbe)
 
-    # compute the center and aspect ratio
-    lon_min, lon_max, lat_min, lat_max = bbox_full
-    lat_center = (lat_max + lat_min) / 2.0
-    lon_center = (lon_max + lon_min) / 2.0
-    print(f"center: {lat_center}, {lon_center}")
-    aspect_ratio = 1 / math.cos(math.radians(lat_center))
+    #text_params = {"rotation": "vertical"}
+    text_params = {}
+    debug_plot(itertools.chain(*closed_lbe.values()), show_ids=True, text_params=text_params)
+    plt.show()
+    foo
+
+    center = bbox_full.center()
+    print(f"center: {center.lat}, {center.lon}")
+    aspect_ratio = 1 / math.cos(math.radians(center.lat))
     # aspect_ratio = 1.0
 
     def xfrm_pts(points):
@@ -177,9 +222,13 @@ if __name__ == "__main__":
     STROKE_WIDTH = 1.0 / PIXEL_SCALE
     STROKE_COLOR_MIN = (0, 64, 0)
     STROKE_COLOR_MAX = (0, 255, 0)
+
+    # length of sides and lower-left corner
+    bbox_sz = (bbox_full.lon_max-bbox_full.lon_min, bbox_full.lat_max-bbox_full.lat_min)
+    bbox_origin = (bbox_full.lon_min, bbox_full.lat_min)
     d = draw.Drawing(
-        *xfrm_pts([(lon_max-lon_min, lat_max-lat_min)]),
-        origin=[*xfrm_pts([(lon_min, lat_min)])],
+        *xfrm_pts([bbox_sz]),
+        origin=[*xfrm_pts([bbox_origin])],
         displayInline=False
     )
 
