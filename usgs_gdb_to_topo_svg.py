@@ -1,3 +1,6 @@
+"""
+Create an output svg combining GIS data and Strava routes
+"""
 import json
 import itertools
 import os
@@ -16,7 +19,7 @@ from contour_utils import Contour, Pt, Bbox, combine_bboxes
 EPS = 1e-5
 
 # just hard-code this for now
-BASE_DIR = "/home/jsam/winHome/Documents/personal/topo_maps"
+BASE_DIR = "/home/jsam/winHome/OneDrive - Microsoft/Documents/personal/topo_maps"
 GIS_FILES = [
     # os.path.join(BASE_DIR, "VECTOR_Seattle_North_WA_7_5_Min_GDB.zip"),  # NE
     os.path.join(BASE_DIR, "VECTOR_Seattle_South_WA_7_5_Min_GDB.zip"),  # SE
@@ -142,7 +145,10 @@ gdal.UseExceptions()
 
 if __name__ == "__main__":
 
+    print("Reading GIS files...")
     data = [gdal.ogr.Open(fname) for fname in GIS_FILES]
+    if not data:
+        raise ValueError("No input data, were input GIS files found?")
 
     # just for initial check, print the layer names
     n_layers = data[0].GetLayerCount()
